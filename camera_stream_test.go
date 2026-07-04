@@ -2,6 +2,7 @@ package reachymini
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"os/exec"
 	"testing"
@@ -45,7 +46,7 @@ func TestFFmpegH264DecodePipeline(t *testing.T) {
 
 	frames := make(chan Frame)
 	errs := make(chan error, 1)
-	go readRGBFrames(stdout, width, height, frames, errs)
+	go readRGBFrames(context.Background(), stdout, width, height, frames, errs)
 
 	go func() {
 		defer stdin.Close()
@@ -98,7 +99,7 @@ func TestFFmpegVP8DecodePipeline(t *testing.T) {
 
 	frames := make(chan Frame)
 	errs := make(chan error, 1)
-	go readRGBFrames(stdout, width, height, frames, errs)
+	go readRGBFrames(context.Background(), stdout, width, height, frames, errs)
 
 	go func() {
 		defer stdin.Close()

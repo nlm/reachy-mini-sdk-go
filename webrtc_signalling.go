@@ -81,6 +81,25 @@ func defaultSignallingURL(baseURL string) string {
 	return "ws://" + host + ":8443"
 }
 
+// reportErr sends err on errs unless ctx is already done. A `select` with
+// both a ctx.Done() case and an errs<- case alongside a `default` is racy --
+// if both channels happen to be ready at once (errs is buffered), Go picks
+// among them at random, so relying on that pattern to suppress teardown
+// noise after an intentional cancellation doesn't reliably work. Checking
+// ctx.Err() first makes the suppression deterministic: once the caller has
+// cancelled ctx, "connection closed"/"read RTP packet: EOF"-type errors from
+// the resulting cleanup (closing the peer connection, killing ffmpeg, etc.)
+// are expected and not worth surfacing.
+func reportErr(ctx context.Context, errs chan<- error, err error) {
+	if ctx.Err() != nil {
+		return
+	}
+	select {
+	case errs <- err:
+	default:
+	}
+}
+
 func sendSig(conn *websocket.Conn, msg sigMessage) error {
 	return conn.WriteJSON(msg)
 }
@@ -199,11 +218,7 @@ func pumpSignalling(ctx context.Context, conn *websocket.Conn, pc *webrtc.PeerCo
 	for {
 		msg, err := recvSig(conn)
 		if err != nil {
-			select {
-			case <-ctx.Done():
-			case errs <- fmt.Errorf("signalling connection closed: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("signalling connection closed: %w", err))
 			return
 		}
 		switch {
@@ -214,21 +229,12 @@ func pumpSignalling(ctx context.Context, conn *websocket.Conn, pc *webrtc.PeerCo
 				SDPMLineIndex: &index,
 			})
 			if candErr != nil {
-				select {
-				case errs <- fmt.Errorf("add remote ICE candidate: %w", candErr):
-				default:
-				}
+				reportErr(ctx, errs, fmt.Errorf("add remote ICE candidate: %w", candErr))
 			}
 		case msg.Type == "error":
-			select {
-			case errs <- fmt.Errorf("signalling server error: %s", msg.Details):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("signalling server error: %s", msg.Details))
 		case msg.Type == "endSession":
-			select {
-			case errs <- fmt.Errorf("producer ended the session"):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("producer ended the session"))
 			return
 		}
 	}

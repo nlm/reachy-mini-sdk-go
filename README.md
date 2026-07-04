@@ -47,6 +47,7 @@ See [github.com/nlm/reachy-mini-sdk-go on pkg.go.dev](https://pkg.go.dev/github.
 | `apps.go` | The Hugging Face Spaces app store: list/install/remove/update/start/stop apps, check for updates |
 | `camera.go` | Camera specs (resolutions, intrinsics/distortion) |
 | `camera_stream.go` + `webrtc_signalling.go` | `StreamCameraFrames` — live decoded video frames over WebRTC |
+| `audio_stream.go` | `StreamMicrophoneAudio` — live decoded PCM audio from the robot's microphone, over the same WebRTC feed |
 | `kinematics.go` | Kinematics info, URDF, STL mesh downloads |
 | `ws.go` | Shared WebSocket helper for the streaming state/target endpoints |
 
@@ -65,6 +66,7 @@ All request/response types were derived from the daemon's live `/openapi.json` a
 - Verified live end-to-end against Pollen's desktop simulator: signalling handshake, WebRTC/ICE negotiation, VP8 depacketization, IVF muxing, and `ffmpeg` decode all confirmed producing real, correctly-decoded frames.
 - The simulator negotiates **VP8**. Real hardware has been observed in the daemon's own source to use **hardware H.264** on Raspberry Pi instead. Both codecs are handled in `camera_stream.go` (decoder choice is deferred until the negotiated codec is known), but only the VP8 path has actually been exercised against a live producer — H.264 is implemented from the same protocol understanding but unverified against real hardware.
 - `TestFFmpegH264DecodePipeline` and `TestFFmpegVP8DecodePipeline` (`camera_stream_test.go`) test the ffmpeg decode pipeline in isolation with synthetic streams, independent of the robot — run with `go test ./...`.
+- The same WebRTC feed also carries an **Opus audio track** from the robot's microphone, alongside the video track (confirmed by cross-referencing the official Python SDK's `ReachyMini(media_backend="webrtc")` + `mini.media.start_recording()` path, which relies on the same daemon capability). `StreamMicrophoneAudio` (`audio_stream.go`) consumes it, muxing RTP packets into an Ogg/Opus container (`pion/webrtc`'s `oggwriter`, no manual depacketization needed since one RTP packet is one Opus frame) and decoding via `ffmpeg` to raw PCM, the same subprocess pattern as the video path. This is implemented from the same protocol understanding as the rest of this file but has **not yet been exercised against a live robot or simulator** — treat it as unverified until tested against real hardware.
 
 ## Verified vs. inferred
 
@@ -74,5 +76,6 @@ Most of the SDK has been exercised against either real Reachy Mini hardware or P
 - `GetKinematicsSTL` — needs a real filename from `GetURDF`'s content, not just guessed
 - `ReadAudioParameter` / `ApplyAudioConfig` — parameter names are undocumented and backend-specific
 - H.264 camera decoding (see above)
+- `StreamMicrophoneAudio` (see "Camera / WebRTC" above)
 
 These are implemented against the daemon's documented schema and follow the same patterns as the verified parts of the SDK, but treat them as a starting point to debug against real traffic rather than a guaranteed-working path.

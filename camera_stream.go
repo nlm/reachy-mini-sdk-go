@@ -114,10 +114,7 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 			return // nil signals end-of-candidates; nothing to forward
 		}
 		if err := sendICECandidate(conn, sessionID, candidate.ToJSON()); err != nil {
-			select {
-			case errs <- fmt.Errorf("send local ICE candidate: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("send local ICE candidate: %w", err))
 		}
 	})
 
@@ -137,26 +134,20 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 			inputFormat = "ivf"
 			feed = func(ffmpegIn io.WriteCloser) { depacketizeVP8(ctx, track, ffmpegIn, width, height, errs) }
 		default:
-			select {
-			case errs <- fmt.Errorf("unsupported video codec %q", track.Codec().MimeType):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("unsupported video codec %q", track.Codec().MimeType))
 			return
 		}
 
 		cmd, ffmpegIn, ffmpegOut, err := startFFmpegDecoder(ffmpegPath, inputFormat, width, height)
 		if err != nil {
-			select {
-			case errs <- fmt.Errorf("start ffmpeg decoder: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("start ffmpeg decoder: %w", err))
 			return
 		}
 		mu.Lock()
 		ffmpegCmd = cmd
 		mu.Unlock()
 
-		go readRGBFrames(ffmpegOut, width, height, frames, errs)
+		go readRGBFrames(ctx, ffmpegOut, width, height, frames, errs)
 		go feed(ffmpegIn)
 	})
 
@@ -230,10 +221,7 @@ func depacketizeH264(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io
 
 		packet, _, err := track.ReadRTP()
 		if err != nil {
-			select {
-			case errs <- fmt.Errorf("read RTP packet: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("read RTP packet: %w", err))
 			return
 		}
 
@@ -242,10 +230,7 @@ func depacketizeH264(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io
 			continue
 		}
 		if _, err := ffmpegIn.Write(nal); err != nil {
-			select {
-			case errs <- fmt.Errorf("write to ffmpeg: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("write to ffmpeg: %w", err))
 			return
 		}
 	}
@@ -259,10 +244,7 @@ func depacketizeH264(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io
 // natively supported by ffmpeg's `-f ivf`).
 func depacketizeVP8(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io.WriteCloser, width, height int, errs chan<- error) {
 	if err := writeIVFHeader(ffmpegIn, width, height); err != nil {
-		select {
-		case errs <- fmt.Errorf("write IVF header: %w", err):
-		default:
-		}
+		reportErr(ctx, errs, fmt.Errorf("write IVF header: %w", err))
 		return
 	}
 
@@ -278,10 +260,7 @@ func depacketizeVP8(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io.
 
 		packet, _, err := track.ReadRTP()
 		if err != nil {
-			select {
-			case errs <- fmt.Errorf("read RTP packet: %w", err):
-			default:
-			}
+			reportErr(ctx, errs, fmt.Errorf("read RTP packet: %w", err))
 			return
 		}
 
@@ -296,10 +275,7 @@ func depacketizeVP8(ctx context.Context, track *webrtc.TrackRemote, ffmpegIn io.
 		}
 		if len(frame) > 0 {
 			if err := writeIVFFrame(ffmpegIn, frame, frameNum); err != nil {
-				select {
-				case errs <- fmt.Errorf("write IVF frame: %w", err):
-				default:
-				}
+				reportErr(ctx, errs, fmt.Errorf("write IVF frame: %w", err))
 				return
 			}
 			frameNum++
@@ -344,17 +320,14 @@ func writeIVFFrame(w io.Writer, frame []byte, frameNum uint64) error {
 
 // readRGBFrames reads fixed-size raw RGB24 frames from ffmpeg's stdout and
 // delivers them on frames until stdout closes or an error occurs.
-func readRGBFrames(ffmpegOut io.ReadCloser, width, height int, frames chan<- Frame, errs chan<- error) {
+func readRGBFrames(ctx context.Context, ffmpegOut io.ReadCloser, width, height int, frames chan<- Frame, errs chan<- error) {
 	defer close(frames)
 	frameSize := width * height * 3
 	for {
 		buf := make([]byte, frameSize)
 		if _, err := io.ReadFull(ffmpegOut, buf); err != nil {
 			if err != io.EOF && err != io.ErrUnexpectedEOF {
-				select {
-				case errs <- fmt.Errorf("read decoded frame: %w", err):
-				default:
-				}
+				reportErr(ctx, errs, fmt.Errorf("read decoded frame: %w", err))
 			}
 			return
 		}
