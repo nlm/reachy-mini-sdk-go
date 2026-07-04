@@ -14,20 +14,14 @@ go get github.com/nlm/reachy-mini-sdk-go
 
 - Go 1.25+
 - `ffmpeg` on `PATH` (only needed for `StreamCameraFrames` — it's used to decode the camera's H.264/VP8 video, since there's no production-quality pure-Go decoder for either)
-- Network access to the robot's daemon, typically via an SSH tunnel:
-
-  ```
-  ssh -L 9000:localhost:9000 -L 8443:localhost:8443 <user>@<robot-host>
-  ```
-
-  Port `9000` is the REST/WebSocket API; `8443` is the WebRTC signalling server used only for the camera feed.
+- Network access to the robot's daemon: port `8000` for the REST/WebSocket API, and `8443` for the WebRTC signalling server used only for the camera feed.
 
 ## Usage
 
 ```go
 import reachymini "github.com/nlm/reachy-mini-sdk-go"
 
-client := reachymini.New("http://localhost:9000")
+client := reachymini.New("http://localhost:8000")
 
 ctx := context.Background()
 if err := client.EnsureMotorMode(ctx, reachymini.MotorModeEnabled); err != nil {

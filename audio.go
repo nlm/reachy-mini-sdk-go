@@ -9,7 +9,11 @@ import (
 // AudioParamPair is one (parameter name, values) pair in an audio config
 // payload, as used by ApplyAudioConfig.
 type AudioParamPair struct {
-	Name   string    `json:"name"`
+	// Name is the mixer parameter's name (backend-specific; see
+	// ReadAudioParameter's doc comment).
+	Name string `json:"name"`
+	// Values are the parameter's new value(s) -- some mixer parameters are
+	// scalar (one value), others are per-channel (one value each).
 	Values []float64 `json:"values"`
 }
 
@@ -21,20 +25,28 @@ type applyAudioConfigRequest struct {
 // ReadAudioParameterResponse is the response of
 // GET /api/audio/config/parameter/{name}.
 type ReadAudioParameterResponse struct {
-	Name   string    `json:"name"`
+	// Name echoes back the parameter name that was requested.
+	Name string `json:"name"`
+	// Values are the parameter's current value(s).
 	Values []float64 `json:"values"`
 }
 
 // VolumeInfo reports the current volume level for a device.
 type VolumeInfo struct {
-	Volume   int    `json:"volume"`
+	// Volume is the current level, 0-100.
+	Volume int `json:"volume"`
+	// Platform identifies the underlying audio backend/OS (e.g. "linux").
 	Platform string `json:"platform"`
-	Device   string `json:"device"`
+	// Device is the backend-specific name of the audio device this
+	// volume applies to.
+	Device string `json:"device"`
 }
 
 // TestSoundResult is the response of POST /api/volume/test-sound.
 type TestSoundResult struct {
-	Status  string `json:"status"`
+	// Status is a short machine-readable outcome (e.g. "ok").
+	Status string `json:"status"`
+	// Message is a human-readable description of the outcome.
 	Message string `json:"message"`
 }
 

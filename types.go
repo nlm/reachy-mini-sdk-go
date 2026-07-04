@@ -14,9 +14,12 @@ type Pose struct {
 
 // XYZRPYPose is a Cartesian position plus roll/pitch/yaw orientation.
 type XYZRPYPose struct {
-	X     float64 `json:"x"`
-	Y     float64 `json:"y"`
-	Z     float64 `json:"z"`
+	// X, Y, Z are the position, in the daemon's native units (meters,
+	// matching the robot's URDF -- see GetURDF).
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+	Z float64 `json:"z"`
+	// Roll, Pitch, Yaw are the orientation, in radians.
 	Roll  float64 `json:"roll"`
 	Pitch float64 `json:"pitch"`
 	Yaw   float64 `json:"yaw"`
@@ -24,6 +27,9 @@ type XYZRPYPose struct {
 
 // Matrix4x4Pose is a raw row-major 4x4 homogeneous transform.
 type Matrix4x4Pose struct {
+	// M holds the matrix in row-major order: M[4*row+col]. The last row is
+	// implicitly [0 0 0 1] for a rigid transform, but the daemon still sends
+	// and expects all 16 values.
 	M [16]float64 `json:"m"`
 }
 
@@ -105,41 +111,71 @@ type MoveUUID struct {
 	UUID string `json:"uuid"`
 }
 
-// GotoRequest is the body of POST /api/move/goto.
+// GotoRequest is the body of POST /api/move/goto. Only the non-nil target
+// fields are commanded; the others are left at their current value.
 type GotoRequest struct {
-	HeadPose      *Pose                  `json:"head_pose,omitempty"`
-	Antennas      *[2]float64            `json:"antennas,omitempty"`
-	BodyYaw       *float64               `json:"body_yaw,omitempty"`
-	Duration      float64                `json:"duration"`
+	// HeadPose is the target head pose, if the head should move.
+	HeadPose *Pose `json:"head_pose,omitempty"`
+	// Antennas is the target [left, right] antenna joint positions, if the
+	// antennas should move.
+	Antennas *[2]float64 `json:"antennas,omitempty"`
+	// BodyYaw is the target body yaw, if the body should rotate.
+	BodyYaw *float64 `json:"body_yaw,omitempty"`
+	// Duration is how long the interpolation should take, in seconds.
+	Duration float64 `json:"duration"`
+	// Interpolation selects the blending curve between the current and
+	// target pose (see InterpolationTechnique).
 	Interpolation InterpolationTechnique `json:"interpolation"`
 }
 
 // FullBodyTarget is the body of POST /api/move/set_target and each frame of
-// WS /api/move/ws/set_target.
+// WS /api/move/ws/set_target. Unlike GotoRequest, there's no interpolation:
+// whichever fields are set are commanded immediately as-is.
 type FullBodyTarget struct {
-	TargetHeadPose *Pose       `json:"target_head_pose,omitempty"`
+	// TargetHeadPose is the target head pose, if the head should move.
+	TargetHeadPose *Pose `json:"target_head_pose,omitempty"`
+	// TargetAntennas is the target [left, right] antenna joint positions,
+	// if the antennas should move.
 	TargetAntennas *[2]float64 `json:"target_antennas,omitempty"`
-	TargetBodyYaw  *float64    `json:"target_body_yaw,omitempty"`
-	Timestamp      *time.Time  `json:"timestamp,omitempty"`
+	// TargetBodyYaw is the target body yaw, if the body should rotate.
+	TargetBodyYaw *float64 `json:"target_body_yaw,omitempty"`
+	// Timestamp optionally tags when this target was computed
+	// client-side, e.g. for latency diagnostics during teleop.
+	Timestamp *time.Time `json:"timestamp,omitempty"`
 }
 
 // DoAInfo is the robot's direction-of-arrival (sound source) estimate.
 type DoAInfo struct {
-	Angle          float64 `json:"angle"`
-	SpeechDetected bool    `json:"speech_detected"`
+	// Angle is the estimated direction to the sound source, in degrees.
+	Angle float64 `json:"angle"`
+	// SpeechDetected reports whether the sound was classified as speech.
+	SpeechDetected bool `json:"speech_detected"`
 }
 
 // FullState is the response of GET /api/state/full and each frame of
-// WS /api/state/ws/full.
+// WS /api/state/ws/full. Fields are omitted by the daemon (left nil/empty)
+// when that subsystem isn't available (e.g. NoMedia mode for DoA).
 type FullState struct {
-	ControlMode      *MotorControlMode `json:"control_mode,omitempty"`
-	HeadPose         *Pose             `json:"head_pose,omitempty"`
-	HeadJoints       []float64         `json:"head_joints,omitempty"`
-	BodyYaw          *float64          `json:"body_yaw,omitempty"`
-	AntennasPosition []float64         `json:"antennas_position,omitempty"`
-	PassiveJoints    []float64         `json:"passive_joints,omitempty"`
-	DoA              *DoAInfo          `json:"doa,omitempty"`
-	Timestamp        *time.Time        `json:"timestamp,omitempty"`
+	// ControlMode is the current motor control mode (see MotorControlMode).
+	ControlMode *MotorControlMode `json:"control_mode,omitempty"`
+	// HeadPose is the head's current pose, equivalent to GetPresentHeadPose.
+	HeadPose *Pose `json:"head_pose,omitempty"`
+	// HeadJoints are the head's raw actuator joint positions, in the
+	// daemon/URDF's native joint order (not a semantic X/Y/Z/RPY breakdown
+	// like HeadPose).
+	HeadJoints []float64 `json:"head_joints,omitempty"`
+	// BodyYaw is the body's current yaw, equivalent to GetPresentBodyYaw.
+	BodyYaw *float64 `json:"body_yaw,omitempty"`
+	// AntennasPosition is the current [left, right] antenna joint
+	// positions, equivalent to GetPresentAntennaPositions.
+	AntennasPosition []float64 `json:"antennas_position,omitempty"`
+	// PassiveJoints are the positions of joints not under direct motor
+	// control (e.g. any spring-loaded or unactuated linkages).
+	PassiveJoints []float64 `json:"passive_joints,omitempty"`
+	// DoA is the current direction-of-arrival estimate, equivalent to GetDoA.
+	DoA *DoAInfo `json:"doa,omitempty"`
+	// Timestamp is when the daemon captured this state snapshot.
+	Timestamp *time.Time `json:"timestamp,omitempty"`
 }
 
 // MotorStatus is the response of GET /api/motors/status.

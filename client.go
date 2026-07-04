@@ -15,10 +15,15 @@ import (
 )
 
 // Client talks to a Reachy Mini daemon reachable at BaseURL (e.g.
-// "http://localhost:8000" when tunneled over SSH with
-// `ssh -L 8000:localhost:8000 <user>@<robot-host>`).
+// "http://localhost:8000" or "http://<robot-host>:8000").
 type Client struct {
-	BaseURL    string
+	// BaseURL is the daemon's REST API root, with no trailing slash (e.g.
+	// "http://localhost:8000"). Also used to derive the WebSocket URLs for
+	// StreamFullState/StreamSetTarget, and, unless overridden, the WebRTC
+	// signalling server URL for StreamCameraFrames.
+	BaseURL string
+	// HTTPClient issues all REST requests. Defaults to a client with a 10s
+	// timeout (see New); replace it to change timeouts, add TLS config, etc.
 	HTTPClient *http.Client
 }
 
@@ -32,8 +37,10 @@ func New(baseURL string) *Client {
 
 // APIError is returned when the daemon responds with a non-2xx status.
 type APIError struct {
+	// StatusCode is the HTTP status the daemon returned (e.g. 404, 500).
 	StatusCode int
-	Body       string
+	// Body is the raw response body, usually a FastAPI JSON error detail.
+	Body string
 }
 
 func (e *APIError) Error() string {

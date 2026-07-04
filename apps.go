@@ -40,43 +40,66 @@ const (
 // AppInfo describes an app available from the robot's app store or already
 // installed.
 type AppInfo struct {
-	Name        string         `json:"name"`
-	SourceKind  SourceKind     `json:"source_kind"`
-	Description string         `json:"description,omitempty"`
-	URL         *string        `json:"url,omitempty"`
-	Extra       map[string]any `json:"extra,omitempty"`
+	// Name is the app's unique identifier, used e.g. by StartApp/RemoveApp.
+	Name string `json:"name"`
+	// SourceKind is where this app comes from (see SourceKind).
+	SourceKind SourceKind `json:"source_kind"`
+	// Description is a human-readable summary, if the source provides one.
+	Description string `json:"description,omitempty"`
+	// URL points at the app's source (e.g. its Hugging Face Space page),
+	// if applicable to SourceKind.
+	URL *string `json:"url,omitempty"`
+	// Extra carries source-specific metadata not otherwise modeled here.
+	Extra map[string]any `json:"extra,omitempty"`
 }
 
 // AppStatus is the status of a running (or just-started/stopped) app.
 type AppStatus struct {
-	Info  AppInfo  `json:"info"`
+	// Info identifies which app this status is for.
+	Info AppInfo `json:"info"`
+	// State is the app's current runtime status (see AppState).
 	State AppState `json:"state"`
-	Error *string  `json:"error,omitempty"`
+	// Error is set when State is AppStateError, describing what went wrong.
+	Error *string `json:"error,omitempty"`
 }
 
 // AppUpdateStatus is the result of checking one installed app for updates.
 type AppUpdateStatus struct {
-	AppName         string  `json:"app_name"`
-	SpaceID         string  `json:"space_id"`
-	InstalledSHA    string  `json:"installed_sha"`
-	LatestSHA       string  `json:"latest_sha"`
-	UpdateAvailable bool    `json:"update_available"`
-	LastModified    *string `json:"last_modified,omitempty"`
+	// AppName is the installed app's name, matching AppInfo.Name.
+	AppName string `json:"app_name"`
+	// SpaceID is the app's Hugging Face Space identifier.
+	SpaceID string `json:"space_id"`
+	// InstalledSHA is the commit SHA currently installed.
+	InstalledSHA string `json:"installed_sha"`
+	// LatestSHA is the commit SHA currently published upstream.
+	LatestSHA string `json:"latest_sha"`
+	// UpdateAvailable reports whether InstalledSHA differs from LatestSHA.
+	UpdateAvailable bool `json:"update_available"`
+	// LastModified is when the upstream Space was last modified, if known.
+	LastModified *string `json:"last_modified,omitempty"`
 }
 
 // AppUpdatesResponse is the response of GET /api/apps/check-updates.
 type AppUpdatesResponse struct {
+	// AppsWithUpdates lists only the installed apps that have an update
+	// available (not every app that was checked).
 	AppsWithUpdates []AppUpdateStatus `json:"apps_with_updates"`
-	AppsChecked     int               `json:"apps_checked"`
-	AppsSkipped     int               `json:"apps_skipped"`
+	// AppsChecked is how many installed apps were checked for updates.
+	AppsChecked int `json:"apps_checked"`
+	// AppsSkipped is how many installed apps couldn't be checked (e.g. not
+	// backed by a Hugging Face Space).
+	AppsSkipped int `json:"apps_skipped"`
 }
 
 // JobInfo is the status of an async app install/update job (see
 // InstallApp, InstallPrivateSpace, UpdateApp).
 type JobInfo struct {
-	Command string    `json:"command"`
-	Status  JobStatus `json:"status"`
-	Logs    []string  `json:"logs"`
+	// Command is the shell command the daemon is running for this job.
+	Command string `json:"command"`
+	// Status is the job's current lifecycle state (see JobStatus).
+	Status JobStatus `json:"status"`
+	// Logs are the job's captured output lines so far.
+	Logs []string `json:"logs"`
 }
 
 type installPrivateSpaceRequest struct {
