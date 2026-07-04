@@ -2,6 +2,7 @@ package reachymini
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -204,6 +205,52 @@ func TestSendAnswerAndSendICECandidate(t *testing.T) {
 		t.Errorf("ICE payload = %+v, want candidate %q index %d", iceMsg.Ice, candidate.Candidate, idx)
 	}
 }
+
+func TestReportErrDeliversWhenNotCancelled(t *testing.T) {
+	errs := make(chan error, 1)
+	reportErr(context.Background(), errs, errBoom)
+
+	select {
+	case err := <-errs:
+		if err != errBoom {
+			t.Errorf("got %v, want %v", err, errBoom)
+		}
+	default:
+		t.Fatal("expected an error on errs")
+	}
+}
+
+func TestReportErrSuppressedAfterCancel(t *testing.T) {
+	// Regression test for the race this helper fixes: a bare `select` with
+	// both a ctx.Done() case and an errs<- case (plus a default) is racy
+	// once errs is buffered and non-empty, since Go picks among ready cases
+	// at random. Checking ctx.Err() first makes suppression deterministic.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	errs := make(chan error, 1)
+	reportErr(ctx, errs, errBoom)
+
+	select {
+	case err := <-errs:
+		t.Fatalf("expected no error after cancellation, got %v", err)
+	default:
+	}
+}
+
+func TestReportErrDropsWhenChannelFull(t *testing.T) {
+	errs := make(chan error, 1)
+	errs <- errBoom // fill the buffer
+
+	reportErr(context.Background(), errs, fmt.Errorf("second error"))
+
+	got := <-errs
+	if got != errBoom {
+		t.Errorf("got %v, want the first error to survive (send should have been dropped)", got)
+	}
+}
+
+var errBoom = fmt.Errorf("boom")
 
 func TestPumpSignallingSurfacesEndSession(t *testing.T) {
 	client := dialSignalling(t, func(server *websocket.Conn) {
