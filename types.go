@@ -108,6 +108,7 @@ const (
 // MoveUUID identifies a move started via Goto, WakeUp, GotoSleep, or
 // PlayRecordedMoveDataset, for use with Stop/ws/updates.
 type MoveUUID struct {
+	// UUID is the move's unique identifier, as assigned by the daemon.
 	UUID string `json:"uuid"`
 }
 
@@ -180,5 +181,6 @@ type FullState struct {
 
 // MotorStatus is the response of GET /api/motors/status.
 type MotorStatus struct {
+	// Mode is the robot's current motor control mode.
 	Mode MotorControlMode `json:"mode"`
 }

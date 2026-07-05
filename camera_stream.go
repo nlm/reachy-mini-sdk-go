@@ -18,9 +18,14 @@ import (
 // Frame is one decoded video frame from StreamCameraFrames: 8-bit RGB,
 // row-major, Width*Height*3 bytes.
 type Frame struct {
+	// Width, Height are the frame's dimensions in pixels.
 	Width, Height int
-	RGB           []byte
-	Timestamp     time.Time
+	// RGB is the frame's pixel data: 8-bit RGB, row-major, Width*Height*3
+	// bytes.
+	RGB []byte
+	// Timestamp is when this frame was decoded, client-side (not a
+	// timestamp carried by the stream itself).
+	Timestamp time.Time
 }
 
 // CameraStreamOptions configures StreamCameraFrames.
