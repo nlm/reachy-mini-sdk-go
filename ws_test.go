@@ -182,6 +182,52 @@ func TestStreamSetTargetClosingChannelStopsLoop(t *testing.T) {
 	}
 }
 
+// TestStreamSetTargetAnswersServerPings guards the keepalive fix: the client
+// stream must answer the server's ping frames with pongs, otherwise the daemon
+// drops a long-lived (continuous/teleop) connection on its ping/idle timeout.
+// gorilla only auto-sends a pong while a read is in progress, so this passes
+// only because StreamSetTarget drains the connection; without that reader the
+// server never sees a pong and this times out.
+func TestStreamSetTargetAnswersServerPings(t *testing.T) {
+	gotPong := make(chan struct{}, 1)
+	c := dialWS(t, "/api/move/ws/set_target", func(server *websocket.Conn) {
+		defer server.Close()
+		server.SetPongHandler(func(string) error {
+			select {
+			case gotPong <- struct{}{}:
+			default:
+			}
+			return nil
+		})
+		if err := server.WriteControl(websocket.PingMessage, nil, time.Now().Add(2*time.Second)); err != nil {
+			t.Errorf("server ping: %v", err)
+			return
+		}
+		// Read so the client's pong control frame is processed (firing the
+		// handler above); the loop also blocks until the client closes at test
+		// end, then returns on the read error.
+		for {
+			if _, _, err := server.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+
+	targets, errs, err := c.StreamSetTarget(context.Background())
+	if err != nil {
+		t.Fatalf("StreamSetTarget: %v", err)
+	}
+	defer close(targets)
+
+	select {
+	case <-gotPong:
+	case err := <-errs:
+		t.Fatalf("unexpected stream error: %v", err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("client stream did not answer the server's keepalive ping (pong not received)")
+	}
+}
+
 func TestStreamFullStateDialError(t *testing.T) {
 	c := &Client{BaseURL: "http://127.0.0.1:0"}
 	_, _, err := c.StreamFullState(context.Background())
