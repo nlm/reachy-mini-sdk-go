@@ -106,3 +106,41 @@ func TestResetAppsCacheUsesNonAPIPath(t *testing.T) {
 		t.Errorf("method = %q, want POST", gotMethod)
 	}
 }
+
+func TestStartAppNoEvictEscapesPath(t *testing.T) {
+	c, got := recordingServer(t, `{"info":{"name":"a/b"},"state":"running"}`)
+	if _, err := c.StartAppNoEvict(context.Background(), "a/b"); err != nil {
+		t.Fatalf("StartAppNoEvict: %v", err)
+	}
+	got.check(t, http.MethodPost, "/api/apps/start-app/a%2Fb/no-evict", "")
+}
+
+func TestGetStartupApp(t *testing.T) {
+	for _, tt := range []struct{ resp, want string }{
+		{`{"startup_app":"radio"}`, "radio"},
+		{`{"startup_app":null}`, ""},
+	} {
+		c, got := recordingServer(t, tt.resp)
+		name, err := c.GetStartupApp(context.Background())
+		if err != nil {
+			t.Fatalf("GetStartupApp: %v", err)
+		}
+		if name != tt.want {
+			t.Errorf("GetStartupApp(%s) = %q, want %q", tt.resp, name, tt.want)
+		}
+		got.check(t, http.MethodGet, "/api/apps/startup-app", "")
+	}
+}
+
+func TestSetStartupApp(t *testing.T) {
+	for _, tt := range []struct{ name, body string }{
+		{"radio", `{"startup_app":"radio"}`},
+		{"", `{"startup_app":null}`},
+	} {
+		c, got := recordingServer(t, `{"startup_app":null}`)
+		if err := c.SetStartupApp(context.Background(), tt.name); err != nil {
+			t.Fatalf("SetStartupApp(%q): %v", tt.name, err)
+		}
+		got.check(t, http.MethodPut, "/api/apps/startup-app", tt.body)
+	}
+}

@@ -2,15 +2,38 @@ package reachymini
 
 import (
 	"context"
+	"math"
+	"strconv"
 
 	"github.com/gorilla/websocket"
 )
 
 // StreamFullState streams FullState frames from WS /api/state/ws/full until
-// ctx is cancelled. The returned channels are closed when the stream ends;
-// drain errs (buffered, size 1) to see why.
+// ctx is cancelled, with the daemon's default fields and rate (10 Hz). The
+// returned channels are closed when the stream ends; drain errs (buffered,
+// size 1) to see why.
 func (c *Client) StreamFullState(ctx context.Context) (<-chan FullState, <-chan error, error) {
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL("/api/state/ws/full"), nil)
+	return c.StreamFullStateWithOptions(ctx, StreamFullStateOptions{})
+}
+
+// StreamFullStateOptions configures StreamFullStateWithOptions.
+type StreamFullStateOptions struct {
+	FullStateOptions
+	// Frequency is the frame rate, in Hz. Zero, negative or infinite keeps
+	// the daemon's default (10 Hz).
+	Frequency float64
+}
+
+// StreamFullStateWithOptions is StreamFullState with the fields and rate
+// selected by opts.
+func (c *Client) StreamFullStateWithOptions(ctx context.Context, opts StreamFullStateOptions) (<-chan FullState, <-chan error, error) {
+	q := opts.query()
+	// The WebSocket has no with_control_mode parameter.
+	q.Del("with_control_mode")
+	if opts.Frequency > 0 && !math.IsInf(opts.Frequency, 1) {
+		q.Set("frequency", strconv.FormatFloat(opts.Frequency, 'g', -1, 64))
+	}
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.wsURL(withQuery("/api/state/ws/full", q)), nil)
 	if err != nil {
 		return nil, nil, err
 	}

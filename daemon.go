@@ -3,6 +3,7 @@ package reachymini
 import (
 	"context"
 	"net/http"
+	"strconv"
 )
 
 // ControlLoopStats reports low-level motor control loop timing/health.
@@ -80,9 +81,12 @@ type DaemonStatus struct {
 	Version string `json:"version"`
 	// HardwareID uniquely identifies this physical robot.
 	HardwareID string `json:"hardware_id"`
+	// FaceTarget is the latest face seen by the daemon's head tracking,
+	// equivalent to GetTrackedFace.
+	FaceTarget FaceTarget `json:"face_target"`
 }
 
-type restartResponse struct {
+type jobResponse struct {
 	JobID string `json:"job_id"`
 }
 
@@ -104,7 +108,110 @@ func (c *Client) GetDaemonStatus(ctx context.Context) (DaemonStatus, error) {
 // GetDaemonStatus afterward rather than assuming it's done when this
 // returns.
 func (c *Client) RestartDaemon(ctx context.Context) (string, error) {
-	var resp restartResponse
+	var resp jobResponse
 	err := c.doJSON(ctx, http.MethodPost, "/api/daemon/restart", nil, &resp)
 	return resp.JobID, err
+}
+
+// StartDaemon starts the daemon's robot backend, optionally playing the
+// wake-up animation once it's up. It is asynchronous and returns the
+// daemon's job ID: GetJobStatus reports when the job is done, and
+// GetDaemonStatus whether the daemon actually ended up running (the job
+// finishes "done" even if the backend failed to start, and starting a
+// running daemon is a no-op). The daemon answers 409 when another
+// start/stop/restart job is already running.
+func (c *Client) StartDaemon(ctx context.Context, wakeUp bool) (string, error) {
+	var resp jobResponse
+	path := "/api/daemon/start?wake_up=" + strconv.FormatBool(wakeUp)
+	err := c.doJSON(ctx, http.MethodPost, path, nil, &resp)
+	return resp.JobID, err
+}
+
+// StopDaemon stops the daemon's robot backend, optionally playing the
+// go-to-sleep animation first. Asynchronous, like StartDaemon. The HTTP API
+// stays reachable, so StartDaemon can bring the backend back, but endpoints
+// that need the backend (movement, state, sounds...) answer 503 until then.
+func (c *Client) StopDaemon(ctx context.Context, gotoSleep bool) (string, error) {
+	var resp jobResponse
+	path := "/api/daemon/stop?goto_sleep=" + strconv.FormatBool(gotoSleep)
+	err := c.doJSON(ctx, http.MethodPost, path, nil, &resp)
+	return resp.JobID, err
+}
+
+type robotName struct {
+	Name *string `json:"name"`
+}
+
+// GetRobotName returns the robot's display name: the name it was last
+// renamed to, else the daemon's configured default. It is "" only when
+// neither exists.
+func (c *Client) GetRobotName(ctx context.Context) (string, error) {
+	var resp robotName
+	err := c.doJSON(ctx, http.MethodGet, "/api/daemon/robot-name", nil, &resp)
+	if resp.Name == nil {
+		return "", err
+	}
+	return *resp.Name, err
+}
+
+// SetRobotName renames the robot (1-64 characters) and returns the name as
+// stored, with surrounding whitespace trimmed. It persists across restarts
+// and takes effect immediately in the daemon status and the robot's mDNS
+// advertisement. The daemon answers 422 for an invalid name (including a
+// blank one) and when it fails to save the name.
+func (c *Client) SetRobotName(ctx context.Context, name string) (string, error) {
+	var resp robotName
+	err := c.doJSON(ctx, http.MethodPost, "/api/daemon/robot-name", robotName{Name: &name}, &resp)
+	if resp.Name == nil {
+		return "", err
+	}
+	return *resp.Name, err
+}
+
+// GetHardwareID returns the robot's unique hardware ID, an opaque 16-hex-char
+// value derived from its audio device's USB serial, stable across reboots
+// and OS reinstalls. It is "" when no
+// robot is attached, e.g. a daemon running on a developer machine.
+func (c *Client) GetHardwareID(ctx context.Context) (string, error) {
+	var resp struct {
+		HardwareID *string `json:"hardware_id"`
+	}
+	err := c.doJSON(ctx, http.MethodGet, "/api/daemon/hardware-id", nil, &resp)
+	if resp.HardwareID == nil {
+		return "", err
+	}
+	return *resp.HardwareID, err
+}
+
+// RobotAppLockState says which managed app, if any, holds the robot.
+type RobotAppLockState string
+
+const (
+	// RobotAppLockFree means no managed app holds the robot.
+	RobotAppLockFree RobotAppLockState = "free"
+	// RobotAppLockLocalApp means an app started by the daemon (StartApp)
+	// is running.
+	RobotAppLockLocalApp RobotAppLockState = "local_app"
+	// RobotAppLockRemoteSession means a remote WebRTC client is connected
+	// through Pollen's central signalling relay.
+	RobotAppLockRemoteSession RobotAppLockState = "remote_session"
+)
+
+// RobotAppLockStatus is the response of GET
+// /api/daemon/robot-app-lock-status.
+type RobotAppLockStatus struct {
+	// State says who holds the robot.
+	State RobotAppLockState `json:"state"`
+	// HolderName is the app name for RobotAppLockLocalApp, the generic
+	// "remote" for RobotAppLockRemoteSession, and empty when free.
+	HolderName string `json:"holder_name"`
+}
+
+// GetRobotAppLockStatus reports which managed app, if any, holds the robot.
+// Clients talking to the daemon directly, like this SDK, bypass the lock, so
+// it only reflects daemon-launched apps and remote sessions.
+func (c *Client) GetRobotAppLockStatus(ctx context.Context) (RobotAppLockStatus, error) {
+	var s RobotAppLockStatus
+	err := c.doJSON(ctx, http.MethodGet, "/api/daemon/robot-app-lock-status", nil, &s)
+	return s, err
 }

@@ -142,8 +142,9 @@ func (c *Client) InstallPrivateSpace(ctx context.Context, spaceID string) (map[s
 	return resp, err
 }
 
-// GetJobStatus returns the status of an install/update job started by
-// InstallApp, InstallPrivateSpace, or UpdateApp.
+// GetJobStatus returns the status of a background job: an install/update
+// started by InstallApp, InstallPrivateSpace, or UpdateApp, or a daemon
+// start/stop/restart (StartDaemon, StopDaemon, RestartDaemon).
 func (c *Client) GetJobStatus(ctx context.Context, jobID string) (JobInfo, error) {
 	var info JobInfo
 	err := c.doJSON(ctx, http.MethodGet, "/api/apps/job-status/"+url.PathEscape(jobID), nil, &info)
@@ -178,11 +179,50 @@ func (c *Client) RestartCurrentApp(ctx context.Context) (AppStatus, error) {
 	return status, err
 }
 
-// StartApp starts appName (stopping any currently running app first).
+// StartApp starts appName. The daemon refuses (HTTP 400) if an app is
+// already running, so call StopCurrentApp first. A remote WebRTC session
+// holding the robot is evicted; use StartAppNoEvict to fail instead.
 func (c *Client) StartApp(ctx context.Context, appName string) (AppStatus, error) {
 	var status AppStatus
 	err := c.doJSON(ctx, http.MethodPost, "/api/apps/start-app/"+url.PathEscape(appName), nil, &status)
 	return status, err
+}
+
+// StartAppNoEvict is StartApp, except that it fails (HTTP 400) rather than
+// evicting a remote WebRTC session that holds the robot (see
+// GetRobotAppLockStatus).
+func (c *Client) StartAppNoEvict(ctx context.Context, appName string) (AppStatus, error) {
+	var status AppStatus
+	err := c.doJSON(ctx, http.MethodPost, "/api/apps/start-app/"+url.PathEscape(appName)+"/no-evict", nil, &status)
+	return status, err
+}
+
+type startupApp struct {
+	StartupApp *string `json:"startup_app"`
+}
+
+// GetStartupApp returns the app the daemon starts automatically, or "" if
+// none is set. The daemon starts it when the robot first wakes up, and when
+// a touch on the antennas wakes an idle robot. It never evicts a remote
+// WebRTC session to do so.
+func (c *Client) GetStartupApp(ctx context.Context) (string, error) {
+	var resp startupApp
+	err := c.doJSON(ctx, http.MethodGet, "/api/apps/startup-app", nil, &resp)
+	if resp.StartupApp == nil {
+		return "", err
+	}
+	return *resp.StartupApp, err
+}
+
+// SetStartupApp sets the app the daemon starts automatically (see
+// GetStartupApp); "" clears it. The app must already be installed (HTTP 400
+// otherwise). The change applies without a daemon restart.
+func (c *Client) SetStartupApp(ctx context.Context, appName string) error {
+	var req startupApp
+	if appName != "" {
+		req.StartupApp = &appName
+	}
+	return c.doJSON(ctx, http.MethodPut, "/api/apps/startup-app", req, nil)
 }
 
 // StopCurrentApp stops whichever app is currently running.

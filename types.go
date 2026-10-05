@@ -147,15 +147,29 @@ type FullBodyTarget struct {
 
 // DoAInfo is the robot's direction-of-arrival (sound source) estimate.
 type DoAInfo struct {
-	// Angle is the estimated direction to the sound source, in degrees.
+	// Angle is the estimated direction to the sound source, in radians:
+	// 0 is the robot's left, pi/2 straight ahead, pi its right.
 	Angle float64 `json:"angle"`
 	// SpeechDetected reports whether the sound was classified as speech.
 	SpeechDetected bool `json:"speech_detected"`
 }
 
+// ImuData is a reading from the robot's IMU (wireless version only).
+type ImuData struct {
+	// Accelerometer is the [x, y, z] linear acceleration, in m/s².
+	Accelerometer [3]float64 `json:"accelerometer"`
+	// Gyroscope is the [x, y, z] angular rate, in rad/s.
+	Gyroscope [3]float64 `json:"gyroscope"`
+	// Quaternion is the orientation as [w, x, y, z] (w first).
+	Quaternion [4]float64 `json:"quaternion"`
+	// Temperature is the IMU's temperature, in °C.
+	Temperature float64 `json:"temperature"`
+}
+
 // FullState is the response of GET /api/state/full and each frame of
 // WS /api/state/ws/full. Fields are omitted by the daemon (left nil/empty)
-// when that subsystem isn't available (e.g. NoMedia mode for DoA).
+// when they weren't requested (see FullStateOptions) or that subsystem isn't
+// available (e.g. NoMedia mode for DoA, no IMU on the Lite).
 type FullState struct {
 	// ControlMode is the current motor control mode (see MotorControlMode).
 	ControlMode *MotorControlMode `json:"control_mode,omitempty"`
@@ -175,6 +189,8 @@ type FullState struct {
 	PassiveJoints []float64 `json:"passive_joints,omitempty"`
 	// DoA is the current direction-of-arrival estimate, equivalent to GetDoA.
 	DoA *DoAInfo `json:"doa,omitempty"`
+	// IMU is the latest IMU reading, equivalent to GetIMU.
+	IMU *ImuData `json:"imu,omitempty"`
 	// Timestamp is when the daemon captured this state snapshot.
 	Timestamp *time.Time `json:"timestamp,omitempty"`
 }

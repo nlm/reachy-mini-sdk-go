@@ -38,13 +38,15 @@ See [github.com/nlm/reachy-mini-sdk-go on pkg.go.dev](https://pkg.go.dev/github.
 
 | File | Covers |
 |---|---|
-| `state.go` | Robot state: full state, present head pose / body yaw / antenna positions, direction-of-arrival, plus `StreamFullState` for the live WebSocket feed |
+| `state.go` | Robot state: full state (with `FullStateOptions` to opt into head/passive joints, DoA, IMU, matrix poses), present head pose / body yaw / antenna positions, direction-of-arrival, IMU, plus `StreamFullState` for the live WebSocket feed |
 | `move.go` | Movement: `Goto` (interpolated), `SetTarget`/`StreamSetTarget` (direct, low-latency), `WakeUp`/`GotoSleep` (canned animations), `Stop`, recorded move datasets |
 | `motors.go` | Motor control mode (`enabled` / `disabled` / `gravity_compensation`), plus `EnsureMotorMode` |
 | `media.go` | Sound playback: play/stop/list/upload/delete, clear incoming audio |
+| `tracking.go` | Daemon-side face tracking: enable (with blend weight) / disable, latest tracked face |
+| `wobbling.go` | Daemon-side audio-reactive head wobbling (the head moves while the robot speaks): enable / disable |
 | `audio.go` | Speaker/mic volume, low-level audio mixer parameters, test sound |
-| `daemon.go` | Daemon status and restart |
-| `apps.go` | The Hugging Face Spaces app store: list/install/remove/update/start/stop apps, check for updates |
+| `daemon.go` | Daemon status, start/stop/restart, robot name, hardware ID, robot app-lock status |
+| `apps.go` | The Hugging Face Spaces app store: list/install/remove/update/start/stop apps, check for updates, the auto-start app |
 | `camera.go` | Camera specs (resolutions, intrinsics/distortion) |
 | `camera_stream.go` + `webrtc_signalling.go` | `StreamCameraFrames` — live decoded video frames over WebRTC |
 | `audio_stream.go` | `StreamMicrophoneAudio` — live decoded PCM audio from the robot's microphone, over the same WebRTC feed |
@@ -77,5 +79,6 @@ Most of the SDK has been exercised against either real Reachy Mini hardware or P
 - `ReadAudioParameter` / `ApplyAudioConfig` — parameter names are undocumented and backend-specific
 - H.264 camera decoding (see above)
 - `StreamMicrophoneAudio` (see "Camera / WebRTC" above)
+- Head tracking and wobbling (`tracking.go`, `wobbling.go`), `GetIMU` / `FullStateOptions`, and the daemon start/stop, robot name, hardware ID, app-lock and startup-app calls — written against the upstream daemon source, not yet run against a live robot
 
 These are implemented against the daemon's documented schema and follow the same patterns as the verified parts of the SDK, but treat them as a starting point to debug against real traffic rather than a guaranteed-working path.

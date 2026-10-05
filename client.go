@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 )
@@ -113,6 +114,14 @@ func (c *Client) doRaw(ctx context.Context, method, path string) ([]byte, error)
 		return nil, &APIError{StatusCode: resp.StatusCode, Body: string(data)}
 	}
 	return data, nil
+}
+
+// withQuery appends q to path, if q is non-empty.
+func withQuery(path string, q url.Values) string {
+	if len(q) == 0 {
+		return path
+	}
+	return path + "?" + q.Encode()
 }
 
 // wsURL converts BaseURL into the matching ws:// or wss:// URL for path.
