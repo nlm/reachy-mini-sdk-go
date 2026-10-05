@@ -31,6 +31,10 @@ type trackingEnableResponse struct {
 // weight > 0; at weight >= 1 the daemon ignores other head targets. It
 // reports false when the daemon can't track (e.g. no camera).
 //
+// Observed on a Reachy Mini Wireless (daemon 1.11.0) with nothing else
+// commanding the head: weight 1.0 turned it toward the face within a
+// second, while 0.3 produced no visible motion.
+//
 // Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) EnableHeadTracking(ctx context.Context, weight float64) (bool, error) {
 	var resp trackingEnableResponse

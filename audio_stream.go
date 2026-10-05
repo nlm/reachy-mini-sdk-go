@@ -65,8 +65,8 @@ const AudioChannels = 1
 // This mirrors the official Python SDK's ReachyMini(media_backend="webrtc")
 // + mini.media.start_recording()/get_audio_sample() path (see
 // examples/sound_record.py in pollen-robotics/reachy_mini), which relies on
-// the same underlying daemon capability. It has been verified against
-// Pollen's desktop simulator but not yet real hardware -- see the README.
+// the same underlying daemon capability. Verified live against Pollen's
+// desktop simulator and a Reachy Mini Wireless.
 func (c *Client) StreamMicrophoneAudio(ctx context.Context, opts AudioStreamOptions) (<-chan []byte, <-chan error, error) {
 	sigURL := opts.SignallingURL
 	if sigURL == "" {

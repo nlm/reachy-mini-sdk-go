@@ -61,12 +61,8 @@ type CameraStreamOptions struct {
 //
 // The negotiated video codec isn't known until after WebRTC negotiation
 // completes, so the decoder is started lazily from the OnTrack callback.
-// Verified live end-to-end against Pollen's desktop simulator (signalling,
-// WebRTC negotiation, VP8 depacketization, IVF muxing, and ffmpeg decode
-// all confirmed producing real, correctly-decoded frames). Real hardware
-// has been observed (in the daemon's own source) to use hardware H.264 on
-// Raspberry Pi instead -- both codecs are handled here, but only the VP8
-// path has actually been exercised against a live producer so far.
+// Verified live end to end with both codecs: VP8 against Pollen's desktop
+// simulator, hardware H.264 against a Reachy Mini Wireless.
 func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOptions) (<-chan Frame, <-chan error, error) {
 	specs, err := c.GetCameraSpecs(ctx)
 	if err != nil {
