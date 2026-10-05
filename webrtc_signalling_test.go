@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -33,7 +34,7 @@ func TestDefaultSignallingURL(t *testing.T) {
 // dialSignalling upgrades an httptest server to a websocket connection and
 // returns both ends, so negotiateSession/sendAnswer/etc. can be exercised
 // against a real (in-process) connection without a live daemon.
-func dialSignalling(t *testing.T, handler func(server *websocket.Conn)) *websocket.Conn {
+func dialSignalling(t *testing.T, handler func(server *websocket.Conn)) *sigConn {
 	t.Helper()
 	upgrader := websocket.Upgrader{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -52,7 +53,7 @@ func dialSignalling(t *testing.T, handler func(server *websocket.Conn)) *websock
 		t.Fatalf("client dial: %v", err)
 	}
 	t.Cleanup(func() { client.Close() })
-	return client
+	return &sigConn{ws: client}
 }
 
 func TestNegotiateSessionHappyPath(t *testing.T) {
@@ -96,7 +97,7 @@ func TestNegotiateSessionHappyPath(t *testing.T) {
 		})
 	})
 
-	sessionID, offer, err := negotiateSession(client, "back-cam")
+	sessionID, offer, err := negotiateSession(context.Background(), client, "back-cam")
 	if err != nil {
 		t.Fatalf("negotiateSession: %v", err)
 	}
@@ -121,7 +122,7 @@ func TestNegotiateSessionUnknownProducerName(t *testing.T) {
 		})
 	})
 
-	_, _, err := negotiateSession(client, "no-such-camera")
+	_, _, err := negotiateSession(context.Background(), client, "no-such-camera")
 	if err == nil {
 		t.Fatal("expected an error for an unknown producer name, got nil")
 	}
@@ -137,7 +138,7 @@ func TestNegotiateSessionNoProducers(t *testing.T) {
 		_ = server.WriteJSON(sigMessage{Type: "list", Producers: nil})
 	})
 
-	_, _, err := negotiateSession(client, "")
+	_, _, err := negotiateSession(context.Background(), client, "")
 	if err == nil {
 		t.Fatal("expected an error when no producers are available, got nil")
 	}
@@ -153,7 +154,7 @@ func TestNegotiateSessionServerError(t *testing.T) {
 		_ = server.WriteJSON(sigMessage{Type: "error", Details: "no soup for you"})
 	})
 
-	_, _, err := negotiateSession(client, "")
+	_, _, err := negotiateSession(context.Background(), client, "")
 	if err == nil || !strings.Contains(err.Error(), "no soup for you") {
 		t.Fatalf("got err %v, want it to mention the server's error details", err)
 	}
@@ -277,5 +278,44 @@ func TestPumpSignallingSurfacesEndSession(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected an error on the errs channel after endSession")
+	}
+}
+
+func TestSigConnConcurrentSends(t *testing.T) {
+	const senders, perSender = 4, 50
+	received := make(chan int, 1)
+	client := dialSignalling(t, func(server *websocket.Conn) {
+		defer server.Close()
+		n := 0
+		for n < senders*perSender {
+			if _, err := recvSig(server); err != nil {
+				break
+			}
+			n++
+		}
+		received <- n
+	})
+
+	var wg sync.WaitGroup
+	for i := 0; i < senders; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < perSender; j++ {
+				if err := sendICECandidate(client, "s", webrtc.ICECandidateInit{Candidate: "candidate:1"}); err != nil {
+					t.Errorf("send: %v", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+	select {
+	case n := <-received:
+		if n != senders*perSender {
+			t.Errorf("server read %d intact messages, want %d", n, senders*perSender)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("server never finished reading")
 	}
 }

@@ -82,7 +82,7 @@ type DaemonStatus struct {
 	// HardwareID uniquely identifies this physical robot.
 	HardwareID string `json:"hardware_id"`
 	// FaceTarget is the latest face seen by the daemon's head tracking,
-	// equivalent to GetTrackedFace.
+	// equivalent to GetTrackedFace. Always empty before daemon 1.11.
 	FaceTarget FaceTarget `json:"face_target"`
 }
 
@@ -145,6 +145,8 @@ type robotName struct {
 // GetRobotName returns the robot's display name: the name it was last
 // renamed to, else the daemon's configured default. It is "" only when
 // neither exists.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) GetRobotName(ctx context.Context) (string, error) {
 	var resp robotName
 	err := c.doJSON(ctx, http.MethodGet, "/api/daemon/robot-name", nil, &resp)
@@ -159,6 +161,8 @@ func (c *Client) GetRobotName(ctx context.Context) (string, error) {
 // and takes effect immediately in the daemon status and the robot's mDNS
 // advertisement. The daemon answers 422 for an invalid name (including a
 // blank one) and when it fails to save the name.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) SetRobotName(ctx context.Context, name string) (string, error) {
 	var resp robotName
 	err := c.doJSON(ctx, http.MethodPost, "/api/daemon/robot-name", robotName{Name: &name}, &resp)

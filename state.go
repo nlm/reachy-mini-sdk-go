@@ -25,7 +25,7 @@ type FullStateOptions struct {
 	PassiveJoints bool
 	// DoA adds DoA.
 	DoA bool
-	// IMU adds IMU.
+	// IMU adds IMU. Daemons before 1.11 ignore it and never report one.
 	IMU bool
 	// PoseMatrix returns HeadPose as a 4x4 matrix (Pose.Matrix) instead of
 	// XYZ/RPY (Pose.XYZRPY).
@@ -102,6 +102,8 @@ func (c *Client) GetDoA(ctx context.Context) (DoAInfo, error) {
 
 // GetIMU returns the latest IMU reading, or nil when there is none: the Lite
 // and simulation have no IMU, and the daemon drops stale readings.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) GetIMU(ctx context.Context) (*ImuData, error) {
 	var d *ImuData
 	err := c.doJSON(ctx, http.MethodGet, "/api/state/imu", nil, &d)

@@ -191,6 +191,8 @@ func (c *Client) StartApp(ctx context.Context, appName string) (AppStatus, error
 // StartAppNoEvict is StartApp, except that it fails (HTTP 400) rather than
 // evicting a remote WebRTC session that holds the robot (see
 // GetRobotAppLockStatus).
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) StartAppNoEvict(ctx context.Context, appName string) (AppStatus, error) {
 	var status AppStatus
 	err := c.doJSON(ctx, http.MethodPost, "/api/apps/start-app/"+url.PathEscape(appName)+"/no-evict", nil, &status)
@@ -205,6 +207,8 @@ type startupApp struct {
 // none is set. The daemon starts it when the robot first wakes up, and when
 // a touch on the antennas wakes an idle robot. It never evicts a remote
 // WebRTC session to do so.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) GetStartupApp(ctx context.Context) (string, error) {
 	var resp startupApp
 	err := c.doJSON(ctx, http.MethodGet, "/api/apps/startup-app", nil, &resp)
@@ -217,6 +221,8 @@ func (c *Client) GetStartupApp(ctx context.Context) (string, error) {
 // SetStartupApp sets the app the daemon starts automatically (see
 // GetStartupApp); "" clears it. The app must already be installed (HTTP 400
 // otherwise). The change applies without a daemon restart.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) SetStartupApp(ctx context.Context, appName string) error {
 	var req startupApp
 	if appName != "" {

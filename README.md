@@ -13,8 +13,8 @@ go get github.com/nlm/reachy-mini-sdk-go
 ## Requirements
 
 - Go 1.25+
-- `ffmpeg` on `PATH` (only needed for `StreamCameraFrames` — it's used to decode the camera's H.264/VP8 video, since there's no production-quality pure-Go decoder for either)
-- Network access to the robot's daemon: port `8000` for the REST/WebSocket API, and `8443` for the WebRTC signalling server used only for the camera feed.
+- `ffmpeg` on `PATH`, built with libopus (only needed for the WebRTC media features — `StreamCameraFrames`, `StreamMicrophoneAudio`, `OpenAudioSession` — where it decodes the camera's H.264/VP8 video and encodes/decodes Opus audio, since there are no production-quality pure-Go codecs for these)
+- Network access to the robot's daemon: port `8000` for the REST/WebSocket API, and `8443` for the WebRTC signalling server used for the camera, microphone and speaker streams.
 
 ## Usage
 
@@ -50,12 +50,15 @@ See [github.com/nlm/reachy-mini-sdk-go on pkg.go.dev](https://pkg.go.dev/github.
 | `camera.go` | Camera specs (resolutions, intrinsics/distortion) |
 | `camera_stream.go` + `webrtc_signalling.go` | `StreamCameraFrames` — live decoded video frames over WebRTC |
 | `audio_stream.go` | `StreamMicrophoneAudio` — live decoded PCM audio from the robot's microphone, over the same WebRTC feed |
+| `audio_session.go` + `speaker_audio.go` + `ogg.go` | `OpenAudioSession` — stream PCM to the robot's speaker (and optionally receive its microphone) over one WebRTC session, with `Clear`/`Buffered`/`Drain` for barge-in and end-of-utterance |
 | `kinematics.go` | Kinematics info, URDF, STL mesh downloads |
 | `ws.go` | Shared WebSocket helper for the streaming state/target endpoints |
 
 All request/response types were derived from the daemon's live `/openapi.json` and cross-checked against a real robot and Pollen's own desktop simulator — see "Verified vs. inferred" below for the exceptions.
 
 ## Known issues / caveats
+
+- **Some calls need daemon 1.11 or newer**: head tracking (`tracking.go`), `GetIMU` / `FullStateOptions.IMU`, `GetRobotName` / `SetRobotName`, `GetStartupApp` / `SetStartupApp` and `StartAppNoEvict`. Older daemons (e.g. the 1.8.x desktop app) answer 404, or simply leave the IMU and `DaemonStatus.FaceTarget` empty.
 
 - **`gravity_compensation` motor mode returns HTTP 500** on daemon v1.8.1 (confirmed against real hardware). Prefer `disabled`, which works reliably.
 - **Motor control mode does not survive a daemon restart.** On real hardware it always came back `disabled`; the desktop simulator has come back either way. Nothing enforces this — any program that moves the robot should call `EnsureMotorMode(ctx, MotorModeEnabled)` first rather than assuming it's already enabled. It's also been observed to reset to `disabled` on its own between sessions, with no restart involved, so "check before you move" is the safe default, not just "check after a restart."
@@ -65,10 +68,13 @@ All request/response types were derived from the daemon's live `/openapi.json` a
 
 ### Camera / WebRTC
 
+- **Every WebRTC stream is its own consumer session**, and the daemon runs a separate camera encoder for each one, even for audio-only use. On the robot's Raspberry Pi that's real load: when you need both microphone and speaker, use one `OpenAudioSession` with `Microphone: true` rather than a separate `StreamMicrophoneAudio`.
+
 - Verified live end-to-end against Pollen's desktop simulator: signalling handshake, WebRTC/ICE negotiation, VP8 depacketization, IVF muxing, and `ffmpeg` decode all confirmed producing real, correctly-decoded frames.
 - The simulator negotiates **VP8**. Real hardware has been observed in the daemon's own source to use **hardware H.264** on Raspberry Pi instead. Both codecs are handled in `camera_stream.go` (decoder choice is deferred until the negotiated codec is known), but only the VP8 path has actually been exercised against a live producer — H.264 is implemented from the same protocol understanding but unverified against real hardware.
 - `TestFFmpegH264DecodePipeline` and `TestFFmpegVP8DecodePipeline` (`camera_stream_test.go`) test the ffmpeg decode pipeline in isolation with synthetic streams, independent of the robot — run with `go test ./...`.
-- The same WebRTC feed also carries an **Opus audio track** from the robot's microphone, alongside the video track (confirmed by cross-referencing the official Python SDK's `ReachyMini(media_backend="webrtc")` + `mini.media.start_recording()` path, which relies on the same daemon capability). `StreamMicrophoneAudio` (`audio_stream.go`) consumes it, muxing RTP packets into an Ogg/Opus container (`pion/webrtc`'s `oggwriter`, no manual depacketization needed since one RTP packet is one Opus frame) and decoding via `ffmpeg` to raw PCM, the same subprocess pattern as the video path. This is implemented from the same protocol understanding as the rest of this file but has **not yet been exercised against a live robot or simulator** — treat it as unverified until tested against real hardware.
+- The same WebRTC feed also carries an **Opus audio track** from the robot's microphone, alongside the video track (confirmed by cross-referencing the official Python SDK's `ReachyMini(media_backend="webrtc")` + `mini.media.start_recording()` path, which relies on the same daemon capability). `StreamMicrophoneAudio` (`audio_stream.go`) consumes it, muxing RTP packets into an Ogg/Opus container (`pion/webrtc`'s `oggwriter`, no manual depacketization needed since one RTP packet is one Opus frame) and decoding via `ffmpeg` to raw PCM, the same subprocess pattern as the video path. It is tested end to end against an in-process fake producer, and the same microphone transport (via `OpenAudioSession`'s `Microphone` option) has been verified against Pollen's desktop simulator, but not yet against real hardware.
+- **Speaker audio** (`OpenAudioSession`) goes the other way: the daemon offers every consumer a send-and-receive audio transceiver and plays what it receives through its speaker, feeding the head wobbler (`EnableWobbling`) and the barge-in flush (`ClearIncomingAudio`). The session encodes PCM to Opus with `ffmpeg` and paces it in real time, sending silence when idle. The daemon assumes a single client sends audio: with several, `ClearIncomingAudio` and its echo canceller follow only the most recently connected one. Tested end to end against an in-process fake producer (`webrtc_fake_producer_test.go`, real pion WebRTC over loopback) and **verified live against Pollen's desktop simulator** (daemons 1.8.4 and 1.11.0): audio plays, drives the wobbler, and stops on `Clear` + `ClearIncomingAudio`. Not yet run on real hardware; `go test -tags live -run Live` (see `live_test.go`) repeats those checks against any daemon.
 
 ## Verified vs. inferred
 
@@ -78,7 +84,9 @@ Most of the SDK has been exercised against either real Reachy Mini hardware or P
 - `GetKinematicsSTL` — needs a real filename from `GetURDF`'s content, not just guessed
 - `ReadAudioParameter` / `ApplyAudioConfig` — parameter names are undocumented and backend-specific
 - H.264 camera decoding (see above)
-- `StreamMicrophoneAudio` (see "Camera / WebRTC" above)
-- Head tracking and wobbling (`tracking.go`, `wobbling.go`), `GetIMU` / `FullStateOptions`, and the daemon start/stop, robot name, hardware ID, app-lock and startup-app calls — written against the upstream daemon source, not yet run against a live robot
+- `StreamMicrophoneAudio` and `OpenAudioSession` on real hardware (both verified against the simulator, see "Camera / WebRTC" above)
+- Head tracking with a face actually in view (enable/disable/face queries are verified on the 1.11 simulator, which reported no face), and `GetIMU` returning a reading (the simulator has no IMU)
+- `StartAppNoEvict` — not run live, since it starts an installed app
+- `StartDaemon` / `StopDaemon` — not run live, since they take the robot backend down
 
 These are implemented against the daemon's documented schema and follow the same patterns as the verified parts of the SDK, but treat them as a starting point to debug against real traffic rather than a guaranteed-working path.

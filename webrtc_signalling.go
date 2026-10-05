@@ -2,8 +2,10 @@ package reachymini
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/gorilla/websocket"
 	"github.com/pion/webrtc/v4"
@@ -100,6 +102,36 @@ func reportErr(ctx context.Context, errs chan<- error, err error) {
 	}
 }
 
+// sigConn is a signalling connection safe for concurrent senders: pion
+// reports local ICE candidates from its own goroutines, which would
+// otherwise write to the WebSocket while the answer is being sent, and
+// gorilla/websocket allows only one concurrent writer. Reads still happen
+// from a single goroutine at a time (negotiateSession, then
+// pumpSignalling).
+type sigConn struct {
+	ws  *websocket.Conn
+	wmu sync.Mutex
+}
+
+// send writes msg, serialized with any concurrent send.
+func (c *sigConn) send(msg sigMessage) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	return sendSig(c.ws, msg)
+}
+
+// recv reads the next message. Only one goroutine may read at a time.
+func (c *sigConn) recv() (sigMessage, error) {
+	return recvSig(c.ws)
+}
+
+// Close closes the connection; safe to call concurrently with send.
+func (c *sigConn) Close() error {
+	return c.ws.Close()
+}
+
+// sendSig writes msg to conn. Not safe for concurrent use; clients go
+// through sigConn.send.
 func sendSig(conn *websocket.Conn, msg sigMessage) error {
 	return conn.WriteJSON(msg)
 }
@@ -114,9 +146,18 @@ func recvSig(conn *websocket.Conn) (sigMessage, error) {
 // starts a session with the chosen one (by producerName, or the first
 // available if empty), and waits for the producer's SDP offer. It returns
 // the session ID (needed for the answer and ICE exchange) and the offer.
-func negotiateSession(conn *websocket.Conn, producerName string) (sessionID, offerSDP string, err error) {
+// If ctx ends first, it closes conn to unblock and returns ctx's error.
+func negotiateSession(ctx context.Context, conn *sigConn, producerName string) (sessionID, offerSDP string, err error) {
+	stop := context.AfterFunc(ctx, func() { _ = conn.Close() })
+	defer func() {
+		if !stop() {
+			// conn is closed (or closing) even if negotiation won the race.
+			sessionID, offerSDP, err = "", "", ctx.Err()
+		}
+	}()
+
 	// Consume the initial "welcome" message before proceeding, per protocol.
-	welcome, err := recvSig(conn)
+	welcome, err := conn.recv()
 	if err != nil {
 		return "", "", fmt.Errorf("read welcome: %w", err)
 	}
@@ -124,16 +165,16 @@ func negotiateSession(conn *websocket.Conn, producerName string) (sessionID, off
 		return "", "", fmt.Errorf("expected welcome message, got %q", welcome.Type)
 	}
 
-	if err := sendSig(conn, sigMessage{Type: "setPeerStatus", Roles: []string{"consumer"}}); err != nil {
+	if err := conn.send(sigMessage{Type: "setPeerStatus", Roles: []string{"consumer"}}); err != nil {
 		return "", "", fmt.Errorf("send setPeerStatus: %w", err)
 	}
 
-	if err := sendSig(conn, sigMessage{Type: "list"}); err != nil {
+	if err := conn.send(sigMessage{Type: "list"}); err != nil {
 		return "", "", fmt.Errorf("send list: %w", err)
 	}
 	var producers []sigPeer
 	for {
-		msg, err := recvSig(conn)
+		msg, err := conn.recv()
 		if err != nil {
 			return "", "", fmt.Errorf("read list response: %w", err)
 		}
@@ -167,7 +208,7 @@ func negotiateSession(conn *websocket.Conn, producerName string) (sessionID, off
 		}
 	}
 
-	if err := sendSig(conn, sigMessage{Type: "startSession", PeerID: producerID}); err != nil {
+	if err := conn.send(sigMessage{Type: "startSession", PeerID: producerID}); err != nil {
 		return "", "", fmt.Errorf("send startSession: %w", err)
 	}
 
@@ -176,7 +217,7 @@ func negotiateSession(conn *websocket.Conn, producerName string) (sessionID, off
 	// carries it first rather than depending on sessionStarted's exact
 	// shape.
 	for {
-		msg, err := recvSig(conn)
+		msg, err := conn.recv()
 		if err != nil {
 			return "", "", fmt.Errorf("read offer: %w", err)
 		}
@@ -190,8 +231,8 @@ func negotiateSession(conn *websocket.Conn, producerName string) (sessionID, off
 }
 
 // sendAnswer sends our SDP answer for sessionID.
-func sendAnswer(conn *websocket.Conn, sessionID, answerSDP string) error {
-	return sendSig(conn, sigMessage{
+func sendAnswer(conn *sigConn, sessionID, answerSDP string) error {
+	return conn.send(sigMessage{
 		Type:      "peer",
 		SessionID: sessionID,
 		Sdp:       &sigSdp{Type: "answer", Sdp: answerSDP},
@@ -199,24 +240,28 @@ func sendAnswer(conn *websocket.Conn, sessionID, answerSDP string) error {
 }
 
 // sendICECandidate forwards a local ICE candidate to the producer.
-func sendICECandidate(conn *websocket.Conn, sessionID string, candidate webrtc.ICECandidateInit) error {
+func sendICECandidate(conn *sigConn, sessionID string, candidate webrtc.ICECandidateInit) error {
 	index := uint32(0)
 	if candidate.SDPMLineIndex != nil {
 		index = uint32(*candidate.SDPMLineIndex)
 	}
-	return sendSig(conn, sigMessage{
+	return conn.send(sigMessage{
 		Type:      "peer",
 		SessionID: sessionID,
 		Ice:       &sigIce{Candidate: candidate.Candidate, SdpMLineIndex: index},
 	})
 }
 
+// errAddICECandidate wraps a remote ICE candidate pion couldn't use. It's
+// not fatal on its own: other candidates may still connect.
+var errAddICECandidate = errors.New("add remote ICE candidate")
+
 // pumpSignalling continues reading signalling messages after negotiation,
 // forwarding remote ICE candidates into pc and surfacing errors, until ctx
 // is cancelled or the connection closes.
-func pumpSignalling(ctx context.Context, conn *websocket.Conn, pc *webrtc.PeerConnection, errs chan<- error) {
+func pumpSignalling(ctx context.Context, conn *sigConn, pc *webrtc.PeerConnection, errs chan<- error) {
 	for {
-		msg, err := recvSig(conn)
+		msg, err := conn.recv()
 		if err != nil {
 			reportErr(ctx, errs, fmt.Errorf("signalling connection closed: %w", err))
 			return
@@ -229,7 +274,7 @@ func pumpSignalling(ctx context.Context, conn *websocket.Conn, pc *webrtc.PeerCo
 				SDPMLineIndex: &index,
 			})
 			if candErr != nil {
-				reportErr(ctx, errs, fmt.Errorf("add remote ICE candidate: %w", candErr))
+				reportErr(ctx, errs, fmt.Errorf("%w: %w", errAddICECandidate, candErr))
 			}
 		case msg.Type == "error":
 			reportErr(ctx, errs, fmt.Errorf("signalling server error: %s", msg.Details))

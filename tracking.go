@@ -30,6 +30,8 @@ type trackingEnableResponse struct {
 // into the head pose by weight (0..1). The detector only runs while
 // weight > 0; at weight >= 1 the daemon ignores other head targets. It
 // reports false when the daemon can't track (e.g. no camera).
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) EnableHeadTracking(ctx context.Context, weight float64) (bool, error) {
 	var resp trackingEnableResponse
 	err := c.doJSON(ctx, http.MethodPost, "/api/media/tracking/enable", trackingEnableRequest{Weight: weight}, &resp)
@@ -37,11 +39,15 @@ func (c *Client) EnableHeadTracking(ctx context.Context, weight float64) (bool, 
 }
 
 // DisableHeadTracking stops the daemon's face detector.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) DisableHeadTracking(ctx context.Context) error {
 	return c.doJSON(ctx, http.MethodPost, "/api/media/tracking/disable", nil, nil)
 }
 
 // GetTrackedFace returns the latest face the daemon's detector observed.
+//
+// Requires daemon 1.11+ (older daemons answer 404).
 func (c *Client) GetTrackedFace(ctx context.Context) (FaceTarget, error) {
 	var resp struct {
 		FaceTarget FaceTarget `json:"face_target"`

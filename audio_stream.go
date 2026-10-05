@@ -68,12 +68,13 @@ func (c *Client) StreamMicrophoneAudio(ctx context.Context, opts AudioStreamOpti
 		sigURL = defaultSignallingURL(c.BaseURL)
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, sigURL, nil)
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, sigURL, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial signalling server %s: %w", sigURL, err)
 	}
+	conn := &sigConn{ws: ws}
 
-	sessionID, offerSDP, err := negotiateSession(conn, opts.ProducerName)
+	sessionID, offerSDP, err := negotiateSession(ctx, conn, opts.ProducerName)
 	if err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("negotiate session: %w", err)
@@ -122,41 +123,15 @@ func (c *Client) StreamMicrophoneAudio(ctx context.Context, opts AudioStreamOpti
 		if track.Kind() != webrtc.RTPCodecTypeAudio {
 			return
 		}
-
-		mimeType := strings.ToLower(track.Codec().MimeType)
-		if mimeType != strings.ToLower(webrtc.MimeTypeOpus) {
-			reportErr(ctx, errs, fmt.Errorf("unsupported audio codec %q", track.Codec().MimeType))
-			return
-		}
-
-		// The Ogg/Opus container declares the track's own negotiated clock
-		// rate/channels (needed to build valid Opus headers), independent
-		// of the ffmpeg output format below.
-		sampleRate := int(track.Codec().ClockRate)
-		channels := int(track.Codec().Channels)
-		if channels == 0 {
-			channels = 1
-		}
-
-		cmd, ffmpegIn, ffmpegOut, err := startFFmpegAudioDecoder(ffmpegPath)
+		cmd, w, _, err := startMicDecoder(ctx, track, ffmpegPath, pcmChunks, errs)
 		if err != nil {
-			reportErr(ctx, errs, fmt.Errorf("start ffmpeg decoder: %w", err))
-			return
-		}
-		w, err := oggwriter.NewWith(ffmpegIn, uint32(sampleRate), uint16(channels))
-		if err != nil {
-			reportErr(ctx, errs, fmt.Errorf("create ogg/opus writer: %w", err))
-			_ = ffmpegIn.Close()
-			_ = cmd.Process.Kill()
+			reportErr(ctx, errs, err)
 			return
 		}
 		mu.Lock()
 		ffmpegCmd = cmd
 		oggw = w
 		mu.Unlock()
-
-		go readPCMChunks(ctx, ffmpegOut, pcmChunks, errs)
-		go depacketizeOpus(ctx, track, w, ffmpegIn, errs)
 	})
 
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}); err != nil {
@@ -185,6 +160,58 @@ func (c *Client) StreamMicrophoneAudio(ctx context.Context, opts AudioStreamOpti
 	}()
 
 	return pcmChunks, errs, nil
+}
+
+// startMicDecoder decodes track, the robot microphone's Opus audio, to
+// PCM delivered on pcm (closed when decoding ends): it starts an ffmpeg
+// decoder and the goroutines that feed and drain it, which stop when ctx
+// ends or the track does. done is closed once both goroutines have exited;
+// callers kill cmd to stop it early.
+func startMicDecoder(ctx context.Context, track *webrtc.TrackRemote, ffmpegPath string, pcm chan<- []byte, errs chan<- error) (cmd *exec.Cmd, w *oggwriter.OggWriter, done <-chan struct{}, err error) {
+	if !strings.EqualFold(track.Codec().MimeType, webrtc.MimeTypeOpus) {
+		return nil, nil, nil, fmt.Errorf("unsupported audio codec %q", track.Codec().MimeType)
+	}
+
+	// The Ogg/Opus container declares the track's own negotiated clock
+	// rate/channels (needed to build valid Opus headers), independent of
+	// the ffmpeg output format.
+	sampleRate := int(track.Codec().ClockRate)
+	channels := int(track.Codec().Channels)
+	if channels == 0 {
+		channels = 1
+	}
+
+	cmd, ffmpegIn, ffmpegOut, err := startFFmpegAudioDecoder(ffmpegPath)
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("start ffmpeg decoder: %w", err)
+	}
+	w, err = oggwriter.NewWith(ffmpegIn, uint32(sampleRate), uint16(channels))
+	if err != nil {
+		_ = ffmpegIn.Close()
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+		return nil, nil, nil, fmt.Errorf("create ogg/opus writer: %w", err)
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		readPCMChunks(ctx, ffmpegOut, pcm, errs)
+		// Unblocks ffmpeg (or a child of a forking wrapper that survives
+		// a kill) if it's stuck writing output nobody will read.
+		_ = ffmpegOut.Close()
+	}()
+	go func() {
+		defer wg.Done()
+		depacketizeOpus(ctx, track, w, ffmpegIn, errs)
+	}()
+	doneCh := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(doneCh)
+	}()
+	return cmd, w, doneCh, nil
 }
 
 // startFFmpegAudioDecoder spawns ffmpeg reading an Ogg/Opus container on
@@ -242,7 +269,9 @@ func depacketizeOpus(ctx context.Context, track *webrtc.TrackRemote, w *oggwrite
 }
 
 // readPCMChunks reads raw PCM from ffmpeg's stdout and delivers it in
-// fixed-size chunks on pcmChunks until stdout closes or an error occurs.
+// chunks on pcmChunks until stdout closes, an error occurs, or ctx ends
+// (so a consumer that stopped reading can't block it forever). It closes
+// pcmChunks when it returns.
 func readPCMChunks(ctx context.Context, ffmpegOut io.ReadCloser, pcmChunks chan<- []byte, errs chan<- error) {
 	defer close(pcmChunks)
 	const chunkSize = 4096
@@ -250,7 +279,11 @@ func readPCMChunks(ctx context.Context, ffmpegOut io.ReadCloser, pcmChunks chan<
 		buf := make([]byte, chunkSize)
 		n, err := ffmpegOut.Read(buf)
 		if n > 0 {
-			pcmChunks <- buf[:n]
+			select {
+			case pcmChunks <- buf[:n]:
+			case <-ctx.Done():
+				return
+			}
 		}
 		if err != nil {
 			if err != io.EOF {

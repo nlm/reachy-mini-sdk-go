@@ -77,12 +77,13 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 		sigURL = defaultSignallingURL(c.BaseURL)
 	}
 
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, sigURL, nil)
+	ws, _, err := websocket.DefaultDialer.DialContext(ctx, sigURL, nil)
 	if err != nil {
 		return nil, nil, fmt.Errorf("dial signalling server %s: %w", sigURL, err)
 	}
+	conn := &sigConn{ws: ws}
 
-	sessionID, offerSDP, err := negotiateSession(conn, opts.ProducerName)
+	sessionID, offerSDP, err := negotiateSession(ctx, conn, opts.ProducerName)
 	if err != nil {
 		conn.Close()
 		return nil, nil, fmt.Errorf("negotiate session: %w", err)
