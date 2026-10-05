@@ -22,6 +22,8 @@ type fakeProducer struct {
 	SignallingURL string
 	// AudioOut is the producer's outgoing audio (the robot's microphone).
 	AudioOut *webrtc.TrackLocalStaticSample
+	// VideoOut is the producer's outgoing VP8 video (the robot's camera).
+	VideoOut *webrtc.TrackLocalStaticSample
 	// AudioIn receives the consumer's audio track (bound for the robot's
 	// speaker), once the consumer sends one.
 	AudioIn chan *webrtc.TrackRemote
@@ -57,6 +59,7 @@ func newFakeProducerWithAudio(t *testing.T, audioDir webrtc.RTPTransceiverDirect
 	}
 	fp := &fakeProducer{
 		AudioOut:  audioOut,
+		VideoOut:  videoOut,
 		AudioIn:   make(chan *webrtc.TrackRemote, 1),
 		Connected: make(chan struct{}),
 		errs:      make(chan error, 16),

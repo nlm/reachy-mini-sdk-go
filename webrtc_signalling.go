@@ -252,6 +252,10 @@ func sendICECandidate(conn *sigConn, sessionID string, candidate webrtc.ICECandi
 	})
 }
 
+// errWebRTCFailed reports a peer connection that failed, e.g. because ICE
+// found no working path to the daemon.
+var errWebRTCFailed = errors.New("WebRTC connection failed")
+
 // errAddICECandidate wraps a remote ICE candidate pion couldn't use. It's
 // not fatal on its own: other candidates may still connect.
 var errAddICECandidate = errors.New("add remote ICE candidate")

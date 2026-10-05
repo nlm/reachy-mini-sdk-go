@@ -7,7 +7,6 @@ import (
 	"io"
 	"os/exec"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -53,6 +52,12 @@ type CameraStreamOptions struct {
 // decodes it to raw RGB frames, delivered on the returned channel until ctx
 // is cancelled. Requires an `ffmpeg` binary on PATH (or set
 // opts.FFmpegPath).
+//
+// The returned channel is closed once the stream ends after ctx is
+// cancelled (or when the daemon ends the track). Errors, including a WebRTC
+// connection that fails, are reported on errs; the stream doesn't end by
+// itself on error, so cancel ctx to release it. The ffmpeg decoder is
+// reaped on cancel.
 //
 // The negotiated video codec isn't known until after WebRTC negotiation
 // completes, so the decoder is started lazily from the OnTrack callback.
@@ -101,18 +106,15 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 	}
 
 	frames := make(chan Frame)
-	errs := make(chan error, 1)
+	// Room for a few non-fatal errors (e.g. unusable ICE candidates)
+	// without crowding out a fatal one the caller hasn't read yet.
+	errs := make(chan error, 8)
 
-	var mu sync.Mutex
-	var ffmpegCmd *exec.Cmd
+	dec := &trackDecoder{closeOut: func() { close(frames) }}
 	cleanup := func() {
-		mu.Lock()
-		if ffmpegCmd != nil && ffmpegCmd.Process != nil {
-			_ = ffmpegCmd.Process.Kill()
-		}
-		mu.Unlock()
-		pc.Close()
 		conn.Close()
+		pc.Close()
+		dec.stop()
 	}
 
 	pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
@@ -128,33 +130,21 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 		if track.Kind() != webrtc.RTPCodecTypeVideo {
 			return
 		}
-
-		mimeType := strings.ToLower(track.Codec().MimeType)
-		var inputFormat string
-		var feed func(ffmpegIn io.WriteCloser)
-		switch mimeType {
-		case strings.ToLower(webrtc.MimeTypeH264):
-			inputFormat = "h264"
-			feed = func(ffmpegIn io.WriteCloser) { depacketizeH264(ctx, track, ffmpegIn, errs) }
-		case strings.ToLower(webrtc.MimeTypeVP8):
-			inputFormat = "ivf"
-			feed = func(ffmpegIn io.WriteCloser) { depacketizeVP8(ctx, track, ffmpegIn, width, height, errs) }
-		default:
-			reportErr(ctx, errs, fmt.Errorf("unsupported video codec %q", track.Codec().MimeType))
-			return
+		if ran, err := dec.start(func() (decoderProc, error) {
+			return startCameraDecoder(ctx, track, ffmpegPath, width, height, frames, errs)
+		}); err != nil {
+			reportErr(ctx, errs, err)
+		} else if !ran {
+			drainTrack(track) // a second track: keep pion's buffers moving
 		}
+	})
 
-		cmd, ffmpegIn, ffmpegOut, err := startFFmpegDecoder(ffmpegPath, inputFormat, width, height)
-		if err != nil {
-			reportErr(ctx, errs, fmt.Errorf("start ffmpeg decoder: %w", err))
-			return
+	// Without this, a connection that fails (e.g. ICE can't get through)
+	// would just never deliver anything.
+	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		if state == webrtc.PeerConnectionStateFailed {
+			reportErr(ctx, errs, errWebRTCFailed)
 		}
-		mu.Lock()
-		ffmpegCmd = cmd
-		mu.Unlock()
-
-		go readRGBFrames(ctx, ffmpegOut, width, height, frames, errs)
-		go feed(ffmpegIn)
 	})
 
 	if err := pc.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeOffer, SDP: offerSDP}); err != nil {
@@ -183,6 +173,41 @@ func (c *Client) StreamCameraFrames(ctx context.Context, opts CameraStreamOption
 	}()
 
 	return frames, errs, nil
+}
+
+// startCameraDecoder decodes track (H.264 or VP8) to RGB frames of width x
+// height delivered on frames (closed when decoding ends): it starts an
+// ffmpeg decoder and the goroutines that feed and drain it, which stop when
+// ctx ends, the track does, or the decoder is stopped (see trackDecoder).
+func startCameraDecoder(ctx context.Context, track *webrtc.TrackRemote, ffmpegPath string, width, height int, frames chan<- Frame, errs chan<- error) (decoderProc, error) {
+	var inputFormat string
+	var feed func(ffmpegIn io.WriteCloser)
+	switch strings.ToLower(track.Codec().MimeType) {
+	case strings.ToLower(webrtc.MimeTypeH264):
+		inputFormat = "h264"
+		feed = func(ffmpegIn io.WriteCloser) { depacketizeH264(ctx, track, ffmpegIn, errs) }
+	case strings.ToLower(webrtc.MimeTypeVP8):
+		inputFormat = "ivf"
+		feed = func(ffmpegIn io.WriteCloser) { depacketizeVP8(ctx, track, ffmpegIn, width, height, errs) }
+	default:
+		return decoderProc{}, fmt.Errorf("unsupported video codec %q", track.Codec().MimeType)
+	}
+
+	cmd, ffmpegIn, ffmpegOut, err := startFFmpegDecoder(ffmpegPath, inputFormat, width, height)
+	if err != nil {
+		return decoderProc{}, fmt.Errorf("start ffmpeg decoder: %w", err)
+	}
+	done := goDecoder(
+		func() {
+			defer ffmpegIn.Close() // lets ffmpeg flush and exit when the track ends
+			feed(ffmpegIn)
+		},
+		func() {
+			readRGBFrames(ctx, ffmpegOut, width, height, frames, errs)
+			_ = ffmpegOut.Close() // see startMicDecoder
+		},
+	)
+	return decoderProc{cmd: cmd, pipes: []io.Closer{ffmpegIn, ffmpegOut}, done: done}, nil
 }
 
 // startFFmpegDecoder spawns ffmpeg reading inputFormat ("h264" or "ivf") on
@@ -325,7 +350,9 @@ func writeIVFFrame(w io.Writer, frame []byte, frameNum uint64) error {
 }
 
 // readRGBFrames reads fixed-size raw RGB24 frames from ffmpeg's stdout and
-// delivers them on frames until stdout closes or an error occurs.
+// delivers them on frames until stdout closes, an error occurs, or ctx ends
+// (so a consumer that took one frame and cancelled can't leave it blocked
+// holding the next). It closes frames when it returns.
 func readRGBFrames(ctx context.Context, ffmpegOut io.ReadCloser, width, height int, frames chan<- Frame, errs chan<- error) {
 	defer close(frames)
 	frameSize := width * height * 3
@@ -337,6 +364,10 @@ func readRGBFrames(ctx context.Context, ffmpegOut io.ReadCloser, width, height i
 			}
 			return
 		}
-		frames <- Frame{Width: width, Height: height, RGB: buf, Timestamp: time.Now()}
+		select {
+		case frames <- Frame{Width: width, Height: height, RGB: buf, Timestamp: time.Now()}:
+		case <-ctx.Done():
+			return
+		}
 	}
 }

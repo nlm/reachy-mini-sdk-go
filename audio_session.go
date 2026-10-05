@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os/exec"
 	"sync"
 	"time"
 
@@ -150,19 +149,13 @@ func (c *Client) OpenAudioSession(ctx context.Context, opts AudioSessionOptions)
 		ctx:            sessCtx,
 		done:           make(chan struct{}),
 	}
+	// The microphone decoder starts from pion's OnTrack callback, which
+	// can fire at any time, so trackDecoder tracks it apart from wg.
+	var mic *trackDecoder
 	if opts.Microphone {
 		s.mic = make(chan []byte)
+		mic = &trackDecoder{closeOut: func() { close(s.mic) }}
 	}
-	// The microphone decoder starts from pion's OnTrack callback, which
-	// can fire at any time, so it's tracked apart from wg: under micMu,
-	// either shutdown hasn't begun and the decoder registers itself, or
-	// it has and the decoder never starts.
-	var (
-		micMu       sync.Mutex
-		micStopping bool
-		micCmd      *exec.Cmd
-		micDone     <-chan struct{}
-	)
 	var stopOnce sync.Once
 	s.stop = func(err error) {
 		stopOnce.Do(func() {
@@ -198,15 +191,8 @@ func (c *Client) OpenAudioSession(ctx context.Context, opts AudioSessionOptions)
 		// left a child holding the pipes open.
 		_ = encIn.Close()
 		_ = encOut.Close()
-		micMu.Lock()
-		micStopping = true
-		micMu.Unlock()
-		if micCmd != nil {
-			_ = micCmd.Process.Kill()
-			<-micDone // closes s.mic
-			_ = micCmd.Wait()
-		} else if s.mic != nil {
-			close(s.mic)
+		if mic != nil {
+			mic.stop() // closes s.mic
 		}
 		wg.Wait()
 		_ = cmd.Wait() // only after the sender has stopped reading encOut
@@ -236,32 +222,20 @@ func (c *Client) OpenAudioSession(ctx context.Context, opts AudioSessionOptions)
 		}
 	})
 	pc.OnTrack(func(remote *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
-		if s.mic != nil && remote.Kind() == webrtc.RTPCodecTypeAudio {
-			micMu.Lock()
-			started := false
-			if !micStopping && micCmd == nil {
-				dec, _, done, err := startMicDecoder(sessCtx, remote, opts.FFmpegPath, s.mic, errs)
-				if err != nil {
-					s.stop(fmt.Errorf("microphone: %w", err))
-				} else {
-					micCmd, micDone, started = dec, done, true
-				}
+		if mic != nil && remote.Kind() == webrtc.RTPCodecTypeAudio {
+			ran, err := mic.start(func() (decoderProc, error) {
+				return startMicDecoder(sessCtx, remote, opts.FFmpegPath, s.mic, errs)
+			})
+			if err != nil {
+				s.stop(fmt.Errorf("microphone: %w", err))
 			}
-			micMu.Unlock()
-			if started {
+			if ran {
 				return
 			}
 		}
 		// The daemon sends its camera (and microphone) to every consumer;
-		// drain what we don't use so pion's buffers don't fill. These end
-		// with pc.
-		go func() {
-			for {
-				if _, _, err := remote.ReadRTP(); err != nil {
-					return
-				}
-			}
-		}()
+		// drain what we don't use so pion's buffers don't fill.
+		drainTrack(remote)
 	})
 	connected := make(chan struct{})
 	var connectedOnce sync.Once
@@ -270,7 +244,7 @@ func (c *Client) OpenAudioSession(ctx context.Context, opts AudioSessionOptions)
 		case webrtc.PeerConnectionStateConnected:
 			connectedOnce.Do(func() { close(connected) })
 		case webrtc.PeerConnectionStateFailed:
-			s.stop(errors.New("WebRTC connection failed"))
+			s.stop(errWebRTCFailed)
 		case webrtc.PeerConnectionStateClosed:
 			s.stop(errors.New("WebRTC connection closed"))
 		}

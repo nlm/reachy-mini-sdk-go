@@ -42,7 +42,7 @@ func TestFFmpegH264DecodePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startFFmpegDecoder: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 
 	frames := make(chan Frame)
 	errs := make(chan error, 1)
@@ -95,7 +95,7 @@ func TestFFmpegVP8DecodePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startFFmpegDecoder: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 
 	frames := make(chan Frame)
 	errs := make(chan error, 1)

@@ -45,7 +45,7 @@ func TestFFmpegOpusDecodePipeline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startFFmpegAudioDecoder: %v", err)
 	}
-	defer cmd.Process.Kill()
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
 
 	pcmChunks := make(chan []byte)
 	errs := make(chan error, 1)
